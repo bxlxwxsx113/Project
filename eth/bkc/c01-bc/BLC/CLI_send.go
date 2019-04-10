@@ -16,4 +16,7 @@ func (cli *CLI) send(from, to, amount []string) {
 	defer blockchain.DB.Close()
 	// 通过传入的交易生成新的区块
 	blockchain.MineNewBlock(from, to, amount)
+
+	utxoSet := &UTXOSet{BlockChain: blockchain}
+	utxoSet.Update()
 }

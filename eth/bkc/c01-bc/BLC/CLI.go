@@ -14,15 +14,19 @@ type CLI struct {
 func (cli *CLI) PrintUsage() {
 	fmt.Println("Usage:")
 	// 初始化区块链
-	fmt.Printf("\tcreateblockchain -address address-- 创建区块链\n")
+	fmt.Println("\tcreateblockchain -address address-- 创建区块链")
 	// 添加区块
-	fmt.Printf("\taddblock -data DATA -- 添加区块\n")
+	fmt.Println("\taddblock -data DATA -- 添加区块")
 	// 打印完整的区块信息
-	fmt.Printf("\tprintchain -- 输出区块链信息\n")
+	fmt.Println("\tprintchain -- 输出区块链信息")
 	// 转账
-	fmt.Printf("\tsend -from FROM -to To -amount AMOUNT -- 转账\n")
+	fmt.Println("\tsend -from FROM -to To -amount AMOUNT -- 转账")
 	// 查询余额
 	fmt.Println("\tgetbalance -address FROM -- 查询指定地址余额")
+	// 创建钱包
+	fmt.Println("\tcreatewallet -- 创建钱包")
+	// 获取地址
+	fmt.Println("\tgetaccount -- 创建钱包")
 
 	fmt.Println("\t转账参数说明：")
 	fmt.Println("\t\t-from FROM -- 转账源地址")
@@ -30,6 +34,8 @@ func (cli *CLI) PrintUsage() {
 	fmt.Println("\t\t-amout AMOUT -- 转账源地址")
 
 	fmt.Println("\t\t-address -- 要查询的地址")
+
+	fmt.Println("\test -- 测试")
 }
 
 // 校验参数数量
@@ -59,7 +65,10 @@ func (cli *CLI) Run() {
 	printChainCmd := flag.NewFlagSet("printchain", flag.ExitOnError)
 	createBLCWithGenesisBlcokCmd := flag.NewFlagSet("createblockchain", flag.ExitOnError)
 	sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
-	getBalanceCmd := flag.NewFlagSet("etbalance", flag.ExitOnError)
+	getBalanceCmd := flag.NewFlagSet("getbalance", flag.ExitOnError)
+	createWalletCmd := flag.NewFlagSet("createwallet", flag.ExitOnError)
+	getAccountCmd := flag.NewFlagSet("getaccount", flag.ExitOnError)
+	testCmd := flag.NewFlagSet("test", flag.ExitOnError)
 	// 命令判断
 	flagAddBlockArg := addBlockCmd.String("data", "send 100 btc to player", "添加区块")
 	flagCreateBlockChain := createBLCWithGenesisBlcokCmd.String("address", "", "接受创世奖励")
@@ -68,6 +77,18 @@ func (cli *CLI) Run() {
 	flagSendAmount := sendCmd.String("amount", "", "转账数额")
 	flagBalanceAddress := getBalanceCmd.String("address", "", "查询的地址")
 	switch os.Args[1] {
+	case "test":
+		if err := testCmd.Parse(os.Args[2:]); err != nil {
+			log.Panicf("test failed! %v\n", err)
+		}
+	case "getaccount":
+		if err := getAccountCmd.Parse(os.Args[2:]); err != nil {
+			log.Panicf("get Account failed! %v\n", err)
+		}
+	case "createwallet":
+		if err := createWalletCmd.Parse(os.Args[2:]); err != nil {
+			log.Panicf("create Wallet failed! %v\n", err)
+		}
 	case "getbalance":
 		if err := getBalanceCmd.Parse(os.Args[2:]); err != nil {
 			log.Panicf("parse Balance failed! %v\n", err)
@@ -91,6 +112,20 @@ func (cli *CLI) Run() {
 	default:
 		cli.PrintUsage()
 		os.Exit(1)
+	}
+	// 获取地址列表
+	if testCmd.Parsed() {
+		cli.TestResetUTXO()
+	}
+
+	// 获取地址列表
+	if getAccountCmd.Parsed() {
+		cli.GetAccount()
+	}
+
+	// 创建钱包
+	if createWalletCmd.Parsed() {
+		cli.CreateWallets()
 	}
 
 	// 查询余额
@@ -139,6 +174,7 @@ func (cli *CLI) Run() {
 	if printChainCmd.Parsed() {
 		cli.printChain()
 	}
+
 	// 创建区块链
 	if createBLCWithGenesisBlcokCmd.Parsed() {
 		if *flagCreateBlockChain == "" {

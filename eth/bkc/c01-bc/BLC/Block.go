@@ -95,12 +95,13 @@ func (b *Block) Print() {
 		for _, vin := range tx.Vins {
 			fmt.Printf("\t\t\tvin-txHash : %x\n", vin.TxHash)
 			fmt.Printf("\t\t\tvin-Vout : %x\n", vin.Vout)
-			fmt.Printf("\t\t\tvin-ScriptSig : %s\n", vin.ScriptSig)
+			fmt.Printf("\t\t\tvin-Signature : %x\n", vin.Signature)
+			fmt.Printf("\t\t\tvin-PublicKey : %x\n", vin.PublicKey)
 		}
 		fmt.Printf("\t\t输出...\n")
 		for _, vout := range tx.Vouts {
 			fmt.Printf("\t\t\tvout-Value : %d\n", vout.Value)
-			fmt.Printf("\t\t\tvout-ScriptPubkey : %s\n", vout.ScriptPubkey)
+			fmt.Printf("\t\t\tvout-Ripemd160Hash : %x\n", vout.Ripemd160Hash)
 		}
 	}
 	fmt.Println("\t-------------------------------------------------------------------------")

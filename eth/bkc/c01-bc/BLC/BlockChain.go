@@ -1,6 +1,8 @@
 package BLC
 
 import (
+	"bytes"
+	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
 	"github.com/boltdb/bolt"
@@ -205,12 +207,25 @@ func BlockChainObject() *BlockChain {
 // 通过接受指定交易，进行打包确认，最总生成新的区块
 func (bc *BlockChain) MineNewBlock(from, to, amount []string) {
 	var txs []*Transaction
-	value, _ := strconv.Atoi(amount[0])
-	// 生成新的交易
-	tx := NewSimpleTransaction(from[0], to[0], value, bc)
+	for index, adress := range from {
+		value, _ := strconv.Atoi(amount[index])
+		// 生成新的交易
+		// 每生成一笔交易，都将其添加到缓存交易列表
+		tx := NewSimpleTransaction(adress, to[index], value, bc, txs)
+		// 追加到交易列表
+		txs = append(txs, tx)
+	}
+	// 给予矿工奖励
+	tx := NewCoinbaseTransaction(from[0])
 	txs = append(txs, tx)
 	// 从数据库获取最新的区块
 	block := bc.GetLastBlock()
+	// 在此进行交易签名的验证
+	for _, tx := range txs {
+		if bc.VerifyTransaction(tx) == false {
+			log.Panicf("ERROR : tx [%x] verify failed!\n", tx.TxHash)
+		}
+	}
 	// 生成新的区块
 	block = NewBlock(block.Height+1, block.Hash, txs)
 	bc.InsertBlock(block)
@@ -227,7 +242,11 @@ func (bc *BlockChain) SpentOutPut(address string) map[string][]int {
 			// 排除coinbase交易
 			if !tx.IsCoinbaseTransaction() {
 				for _, in := range tx.Vins {
-					if in.UnLockWithAddress(address) {
+					// 转换，验证公钥hash
+					pubKeyHash := Base58Decode([]byte(address))
+					ripemd160hash := pubKeyHash[:len(pubKeyHash)-addresscCheckLength]
+
+					if in.UnLockRipemd160Hash(ripemd160hash) {
 						key := hex.EncodeToString(in.TxHash)
 						// 添加到以花费输出的缓存
 						spentTXOutputs[key] = append(spentTXOutputs[key], in.Vout)
@@ -247,8 +266,9 @@ func (bc *BlockChain) SpentOutPut(address string) map[string][]int {
 }
 
 // 获取指定地址的UTO
-func (bc *BlockChain) UnUTXOS(address string) []*UTXO {
+func (bc *BlockChain) UnUTXOS(address string, txs []*Transaction) []*UTXO {
 	var unUTXOS []*UTXO
+
 	// 1.遍历区块链查找与address相关的所有交易
 	//获取迭代器对象
 	bcit := bc.Iterator()
@@ -257,7 +277,63 @@ func (bc *BlockChain) UnUTXOS(address string) []*UTXO {
 	// key: 每个input索引用的交易哈希
 	// value: 索引用的输出的索引列表
 	spentTXOutputs := bc.SpentOutPut(address)
+	// 多比交易的改进思路
+	// 查找缓存中所有的已花费输出
+	// 查找到数据库的已花费输出
+	for _, tx := range txs {
+		// 判断是否时coinbasetransaction
+		if !tx.IsCoinbaseTransaction() {
+			for _, in := range tx.Vins {
+				pubKeyHash := Base58Decode([]byte(address))
+				ripemd160hash := pubKeyHash[:len(pubKeyHash)-addresscCheckLength]
+				if in.UnLockRipemd160Hash(ripemd160hash) {
+					key := hex.EncodeToString(in.TxHash)
+					// 添加到以花费输出的缓存
+					spentTXOutputs[key] = append(spentTXOutputs[key], in.Vout)
+
+				}
+			}
+		}
+	}
+
 	// 4.遍历每个输出与花费输出列表进行对比
+	// 迭代缓存，查找缓存中是否存在有该地址UTXO
+	for _, tx := range txs {
+	WorkCacheTX:
+		for index, vout := range tx.Vouts {
+			if vout.UnLockScriptPubkeyWithAddress(address) {
+				if len(spentTXOutputs) != 0 {
+					var isUtxoTx bool // 判断交易师傅哦被其他交易引用
+					for txHash, indexArray := range spentTXOutputs {
+						txHashStr := hex.EncodeToString(tx.TxHash)
+						// 该交易已经被其他交易引用
+						if txHash == txHashStr {
+							isUtxoTx = true
+							var isSpentUTXO bool // 判断交易UTXO是否被引用
+							for _, voutIndex := range indexArray {
+								if index == voutIndex {
+									isSpentUTXO = true
+									continue WorkCacheTX
+								}
+							}
+							if !isSpentUTXO {
+								utxo := &UTXO{tx.TxHash, index, vout}
+								unUTXOS = append(unUTXOS, utxo)
+							}
+						}
+						if !isUtxoTx {
+							utxo := &UTXO{tx.TxHash, index, vout}
+							unUTXOS = append(unUTXOS, utxo)
+						}
+					}
+				} else {
+					utxo := &UTXO{tx.TxHash, index, vout}
+					unUTXOS = append(unUTXOS, utxo)
+				}
+			}
+		}
+	}
+	// 迭代数据库
 	for {
 		block := bcit.Next()
 		for _, tx := range block.Txs {
@@ -304,7 +380,7 @@ func (bc *BlockChain) UnUTXOS(address string) []*UTXO {
 // 查询指定地址的余额
 func (bc *BlockChain) getBalance(address string) int64 {
 	// 查找指定地址的所有UTXO
-	utoxs := bc.UnUTXOS(address)
+	utoxs := bc.UnUTXOS(address, nil)
 	var amount int64
 	for _, utxo := range utoxs {
 		// 获取每个utxo的value
@@ -314,10 +390,10 @@ func (bc *BlockChain) getBalance(address string) int64 {
 }
 
 // 转账时长找找可用的UTXO就返回
-func (bc *BlockChain) FindSpendableUTXO(from string, amount int64) (int64, map[string][]int) {
+func (bc *BlockChain) FindSpendableUTXO(from string, amount int64, txs []*Transaction) (int64, map[string][]int) {
 	spendableUTXO := make(map[string][]int)
 	var value int64
-	utxo := bc.UnUTXOS(from)
+	utxo := bc.UnUTXOS(from, txs)
 	for _, utxo := range utxo {
 		value += utxo.OutPut.Value
 		// 计算哈希
@@ -333,4 +409,143 @@ func (bc *BlockChain) FindSpendableUTXO(from string, amount int64) (int64, map[s
 		os.Exit(1)
 	}
 	return value, spendableUTXO
+}
+
+// 通过指定的交易hash查找交易
+func (bc *BlockChain) FindTransaction(ID []byte) Transaction {
+	bcit := bc.Iterator()
+	for {
+		block := bcit.Next()
+		for _, tx := range block.Txs {
+			if bytes.Compare(ID, tx.TxHash) == 0 {
+				return *tx
+			}
+		}
+		var hashInt big.Int
+		hashInt.SetBytes(block.PreBlockHash)
+		if big.NewInt(0).Cmp(&hashInt) == 0 {
+			break
+		}
+	}
+	log.Printf("没有找到哈希位[%x]的交易\n", ID)
+	return Transaction{}
+}
+
+// 交易签名
+func (bc *BlockChain) SignTransaction(privateKey ecdsa.PrivateKey, tx *Transaction) {
+	// coinbase交易不需要签名
+	if tx.IsCoinbaseTransaction() {
+		return
+	}
+	// 处理Input，查找tx中引用的vout所属的交易
+	// 对我们所花费的每一比UTXO进行签名
+	// 存储已经引用的交易
+	prevTxs := make(map[string]Transaction)
+	for _, vin := range tx.Vins {
+		// 查找当前交易中输入所引用的交易
+		tx := bc.FindTransaction(vin.TxHash)
+		prevTxs[hex.EncodeToString(tx.TxHash)] = tx
+	}
+
+	// 签名
+	tx.Sign(privateKey, prevTxs)
+}
+
+// 验证签名
+func (bc *BlockChain) VerifyTransaction(tx *Transaction) bool {
+	prevTxs := make(map[string]Transaction)
+	for _, vin := range tx.Vins {
+		// 查找当前交易中输入所引用的交易
+		tx := bc.FindTransaction(vin.TxHash)
+		prevTxs[hex.EncodeToString(tx.TxHash)] = tx
+	}
+	return tx.Verify(prevTxs)
+}
+
+// 退出条件
+func isBreakLoop(prevBlockHash []byte) bool {
+	var hashInt big.Int
+	hashInt.SetBytes(prevBlockHash)
+	if hashInt.Cmp(big.NewInt(0)) == 0 {
+		return true
+	}
+	return false
+}
+
+// 查找整条区块链中已花费输出
+func (bc *BlockChain) FindAllSpentoutputs() map[string][]*TxInput {
+	// 遍历区块链
+	bcit := bc.Iterator()
+
+	spentTXOutputs := make(map[string][]*TxInput, 0)
+	// 查找所有已花费的输出
+	for {
+		block := bcit.Next()
+		// 查找已花费输出
+		for _, tx := range block.Txs {
+			if !tx.IsCoinbaseTransaction() {
+				for _, txInput := range tx.Vins {
+					txHash := hex.EncodeToString(txInput.TxHash)
+					spentTXOutputs[txHash] = append(spentTXOutputs[txHash], txInput)
+				}
+			}
+		}
+		if isBreakLoop(block.PreBlockHash) {
+			break
+		}
+	}
+	return spentTXOutputs
+}
+
+// 查找整条区块链中所有地址的UXTO
+func (bc *BlockChain) FindUTXOMap() map[string]*TXOutputs {
+	bcit := bc.Iterator()
+	// 输出集合
+	utxoMap := make(map[string]*TXOutputs)
+	spentTXOutputs := bc.FindAllSpentoutputs()
+	// 查找所有已花费的输出
+	for {
+		block := bcit.Next()
+		txOutputs := &TXOutputs{[]*TxOutput{}}
+		// 查找已花费输出
+		for _, tx := range block.Txs {
+			if !tx.IsCoinbaseTransaction() {
+				txHash := hex.EncodeToString(tx.TxHash)
+				// 查找输出
+			WorkOutLoop:
+				for index, vout := range tx.Vouts {
+					txInputs := spentTXOutputs[txHash]
+					if len(txInputs) > 0 {
+						isSpent := false
+						for _, in := range txInputs {
+							// 查找指定输出的所有者
+							outPubKey := vout.Ripemd160Hash
+							inPubkey := in.PublicKey
+							if bytes.Compare(outPubKey, Ripemd160Hash(inPubkey)) == 0 {
+								if index == in.Vout {
+									//  该输出已花费
+									isSpent = true
+									continue WorkOutLoop
+								}
+							}
+						}
+						if isSpent == false {
+							// 说明该输出没有被包含在txInputs中
+							txOutputs.TXoutputs = append(txOutputs.TXoutputs, vout)
+						}
+					} else {
+						// 如果没有input引用该交易的输出，那都是UTXO
+						txOutputs.TXoutputs = append(txOutputs.TXoutputs, vout)
+					}
+				}
+				utxoMap[txHash] = txOutputs
+			}
+
+		}
+
+		if isBreakLoop(block.PreBlockHash) {
+			break
+		}
+	}
+	return utxoMap
 }
